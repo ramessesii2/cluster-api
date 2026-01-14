@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/cluster-api/controllers/external"
 	externalfake "sigs.k8s.io/cluster-api/controllers/external/fake"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	v1beta1conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	"sigs.k8s.io/cluster-api/util/test/builder"
 )
@@ -1155,6 +1156,31 @@ func TestMachinePoolConditions(t *testing.T) {
 				g.Expect(v1beta1conditions.Has(getter, clusterv1.InfrastructureReadyV1Beta1Condition)).To(BeTrue())
 				infraReadyCondition := v1beta1conditions.Get(getter, clusterv1.InfrastructureReadyV1Beta1Condition)
 				g.Expect(infraReadyCondition.Status).To(Equal(corev1.ConditionFalse))
+			},
+		},
+		{
+			name:                "MachinesUpToDate condition set when infrastructure ready",
+			dataSecretCreated:   true,
+			infrastructureReady: true,
+			beforeFunc: func(_, _ *unstructured.Unstructured, mp *clusterv1.MachinePool, _ *corev1.NodeList) {
+				mp.Spec.ProviderIDList = []string{"azure://westus2/id-node-4", "aws://us-east-1/id-node-1"}
+				mp.Status.NodeRefs = []corev1.ObjectReference{
+					{Name: "node-1"},
+					{Name: "azure-node-4"},
+				}
+				mp.Status.Replicas = ptr.To(int32(2))
+			},
+			conditionAssertFunc: func(t *testing.T, getter v1beta1conditions.Getter) {
+				t.Helper()
+				g := NewWithT(t)
+
+				// Check that MachinesUpToDate condition is set (v1beta2 condition)
+				mp, ok := getter.(*clusterv1.MachinePool)
+				g.Expect(ok).To(BeTrue())
+				machinesUpToDateCondition := conditions.Get(mp, clusterv1.MachinesUpToDateCondition)
+				g.Expect(machinesUpToDateCondition).ToNot(BeNil())
+				g.Expect(machinesUpToDateCondition.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(machinesUpToDateCondition.Reason).To(Equal(clusterv1.UpToDateReason))
 			},
 		},
 	}
