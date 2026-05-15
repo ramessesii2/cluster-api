@@ -95,3 +95,16 @@ tmp
 
 # Development container configurations (https://containers.dev/)
 .devcontainer
+
+# Scratch / temp YAML files at repo root
+/*.yaml
+
+# Scratch kubeconfigs
+*.kubeconfig
+*.kubeconfig.bak
+
+# Scratch shell scripts
+/test-*.sh
+
+/kind-dev/
+/azure-reproduce-10059/

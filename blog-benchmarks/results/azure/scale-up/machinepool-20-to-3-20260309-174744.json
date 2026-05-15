@@ -1,0 +1,24 @@
+{
+  "benchmark": "scale-up",
+  "provider": "azure",
+  "type": "machinepool",
+  "scale": {
+    "start": 20,
+    "end": 3
+  },
+  "timestamps": {
+    "start": "2026-03-09T12:17:41Z",
+    "end": "2026-03-09T12:17:44Z"
+  },
+  "results": {
+    "first_node_ready_seconds": null,
+    "all_nodes_ready_seconds": 3.434502000,
+    "total_duration_seconds": 3.484059000,
+    "percentiles": {
+      "p50_seconds": N/A,
+      "p90_seconds": N/A,
+      "p99_seconds": N/A
+    }
+  },
+  "raw_node_ready_times": []
+}

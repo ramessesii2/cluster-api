@@ -1,0 +1,126 @@
+# Azure AKS (Managed Kubernetes) Benchmark Cluster
+# Uses AzureManagedControlPlane + AzureManagedMachinePool
+# Both control plane and node pool lifecycle are managed by AKS
+#
+# Prerequisites:
+#   - CAPZ installed on management cluster (clusterctl init --infrastructure azure)
+#   - Azure credentials secret "azure-credentials" created in the aks-bench-azure namespace
+#
+# Before applying, export required env vars:
+#   export AZURE_SUBSCRIPTION_ID=<your-subscription-id>
+#   export BENCHMARK_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+#   envsubst < azure/aks/cluster.yaml | kubectl apply -f -
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aks-bench-azure
+  labels:
+    benchmark: machinepool-vs-md
+    type: aks
+    provider: azure
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureClusterIdentity
+metadata:
+  name: cluster-identity
+  namespace: aks-bench-azure
+  labels:
+    clusterctl.cluster.x-k8s.io/move-hierarchy: "true"
+    benchmark: machinepool-vs-md
+spec:
+  allowedNamespaces: {}
+  type: ServicePrincipal
+  tenantID: "6d498697-2abe-46df-ae3e-4e5b2e25f280"
+  clientID: "acf22266-57d3-4345-b509-1efeb7755c4e"
+  clientSecret:
+    name: azure-credentials
+    namespace: aks-bench-azure
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: aks-bench-azure
+  namespace: aks-bench-azure
+  labels:
+    benchmark: machinepool-vs-md
+    type: aks
+spec:
+  clusterNetwork:
+    services:
+      cidrBlocks:
+        - 10.0.0.0/16
+  controlPlaneRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AzureManagedControlPlane
+    name: aks-bench-azure
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AzureManagedCluster
+    name: aks-bench-azure
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureManagedCluster
+metadata:
+  name: aks-bench-azure
+  namespace: aks-bench-azure
+spec: {}
+---
+# AKS control plane — fully managed by Azure
+# No KubeadmControlPlane, no etcd disks, no bootstrap configs
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureManagedControlPlane
+metadata:
+  name: aks-bench-azure
+  namespace: aks-bench-azure
+spec:
+  identityRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AzureClusterIdentity
+    name: cluster-identity
+  location: centralindia
+  resourceGroupName: aks-bench-azure-rg
+  subscriptionID: ${AZURE_SUBSCRIPTION_ID}
+  version: v1.32.0
+  networkPlugin: azure
+  networkPolicy: azure
+  sku:
+    tier: Free
+  identity:
+    type: SystemAssigned
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachinePool
+metadata:
+  name: aks-bench-azure-workers
+  namespace: aks-bench-azure
+  labels:
+    benchmark: machinepool-vs-md
+    type: aks
+  annotations:
+    benchmark.capi.io/created-at: "${BENCHMARK_START_TIME}"
+spec:
+  clusterName: aks-bench-azure
+  replicas: 6
+  template:
+    spec:
+      bootstrap:
+        dataSecretName: ""
+      clusterName: aks-bench-azure
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: AzureManagedMachinePool
+        name: workers
+      version: v1.32.0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureManagedMachinePool
+metadata:
+  name: workers
+  namespace: aks-bench-azure
+spec:
+  mode: System                         # System node pool (required for AKS)
+  sku: Standard_D2s_v3
+  osDiskSizeGB: 30
+  enableNodePublicIP: false

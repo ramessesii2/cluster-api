@@ -1,0 +1,255 @@
+# Azure MachinePool Benchmark Cluster
+# Uses VMSS (Virtual Machine Scale Set) for native cloud scaling
+#
+# Prerequisites:
+#   - CAPZ installed on management cluster (clusterctl init --infrastructure azure)
+#   - AzureClusterIdentity "cluster-identity" created in the mp-bench-azure namespace
+#     (see: https://capz.sigs.k8s.io/self-managed/getting-started#setting-up-the-cluster-identity)
+#
+# Before applying, export required env vars:
+#   export AZURE_SUBSCRIPTION_ID=<your-subscription-id>
+#   export AZURE_SSH_PUBLIC_KEY_B64=$(cat ~/.ssh/id_rsa.pub | base64 | tr -d '\n')
+#   export BENCHMARK_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+#   envsubst < azure/machinepool/cluster.yaml | kubectl apply -f -
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mp-bench-azure
+  labels:
+    benchmark: machinepool-vs-md
+    type: machinepool
+    provider: azure
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: mp-bench-azure
+  namespace: mp-bench-azure
+  labels:
+    benchmark: machinepool-vs-md
+    type: machinepool
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+        - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: mp-bench-azure-control-plane
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: AzureCluster
+    name: mp-bench-azure
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureCluster
+metadata:
+  name: mp-bench-azure
+  namespace: mp-bench-azure
+spec:
+  location: eastus
+  subscriptionID: ${AZURE_SUBSCRIPTION_ID}
+  resourceGroup: mp-bench-azure-rg
+  identityRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AzureClusterIdentity
+    name: cluster-identity
+    namespace: mp-bench-azure
+  networkSpec:
+    vnet:
+      name: mp-bench-azure-vnet
+    subnets:
+      - name: mp-bench-azure-cp-subnet
+        role: control-plane
+      - name: mp-bench-azure-node-subnet
+        role: node
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: mp-bench-azure-control-plane
+  namespace: mp-bench-azure
+spec:
+  replicas: 1
+  version: v1.32.0
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AzureMachineTemplate
+        name: mp-bench-azure-control-plane
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      controllerManager:
+        extraArgs:
+          - name: allocate-node-cidrs
+            value: "false"
+          - name: cloud-provider
+            value: external
+          - name: cluster-name
+            value: mp-bench-azure
+      etcd:
+        local:
+          dataDir: /var/lib/etcddisk/etcd
+          extraArgs:
+            - name: quota-backend-bytes
+              value: "8589934592"
+    diskSetup:
+      filesystems:
+        - device: /dev/disk/azure/scsi1/lun0
+          extraOpts:
+            - -E
+            - lazy_itable_init=1,lazy_journal_init=1
+          filesystem: ext4
+          label: etcd_disk
+        - device: ephemeral0.1
+          filesystem: ext4
+          label: ephemeral0
+          replaceFS: ntfs
+      partitions:
+        - device: /dev/disk/azure/scsi1/lun0
+          layout: true
+          overwrite: false
+          tableType: gpt
+    files:
+      - contentFrom:
+          secret:
+            key: control-plane-azure.json
+            name: mp-bench-azure-control-plane-azure-json
+        owner: root:root
+        path: /etc/kubernetes/azure.json
+        permissions: "0644"
+    initConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+        name: '{{ ds.meta_data["local_hostname"] }}'
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+        name: '{{ ds.meta_data["local_hostname"] }}'
+    mounts:
+      - - LABEL=etcd_disk
+        - /var/lib/etcddisk
+    verbosity: 10
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureMachineTemplate
+metadata:
+  name: mp-bench-azure-control-plane
+  namespace: mp-bench-azure
+spec:
+  template:
+    spec:
+      vmSize: Standard_D2s_v3
+      osDisk:
+        osType: Linux
+        diskSizeGB: 128
+      dataDisks:
+        - nameSuffix: etcddisk
+          diskSizeGB: 256
+          lun: 0
+      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64}
+---
+# MachinePool using Azure VMSS (Virtual Machine Scale Set)
+# This is the KEY difference - MachinePool delegates scaling to Azure VMSS
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachinePool
+metadata:
+  name: mp-bench-azure-workers
+  namespace: mp-bench-azure
+  labels:
+    benchmark: machinepool-vs-md
+    type: machinepool
+  annotations:
+    benchmark.capi.io/created-at: "${BENCHMARK_START_TIME}"
+spec:
+  clusterName: mp-bench-azure
+  replicas: 5  # override via: kubectl patch machinepool ... -p '{"spec":{"replicas":N}}'
+  failureDomains:
+    - "1"
+    - "2"
+    - "3"
+  template:
+    spec:
+      clusterName: mp-bench-azure
+      version: v1.32.0
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfig
+          name: mp-bench-azure-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AzureMachinePool
+        name: mp-bench-azure-workers
+---
+# AzureMachinePool - wraps Azure Virtual Machine Scale Set
+# VMSS handles: auto-healing, AZ distribution, rolling upgrades
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureMachinePool
+metadata:
+  name: mp-bench-azure-workers
+  namespace: mp-bench-azure
+spec:
+  location: eastus
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      deletePolicy: Oldest
+      maxSurge: 25%
+      maxUnavailable: 1
+  template:
+    vmSize: Standard_D2s_v3
+    osDisk:
+      osType: Linux
+      diskSizeGB: 30
+      managedDisk:
+        storageAccountType: Premium_LRS
+    sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64}
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfig
+metadata:
+  name: mp-bench-azure-workers
+  namespace: mp-bench-azure
+spec:
+  files:
+    - contentFrom:
+        secret:
+          key: worker-node-azure.json
+          name: mp-bench-azure-workers-azure-json
+      owner: root:root
+      path: /etc/kubernetes/azure.json
+      permissions: "0644"
+  joinConfiguration:
+    nodeRegistration:
+      kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+      name: '{{ ds.meta_data["local_hostname"] }}'
+
+
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureClusterIdentity
+metadata:
+  labels:
+    clusterctl.cluster.x-k8s.io/move-hierarchy: "true"
+    benchmark: machinepool-vs-md
+  name: cluster-identity
+  namespace: mp-bench-azure
+spec:
+  allowedNamespaces: {}
+  type: ServicePrincipal
+  tenantID: "6d498697-2abe-46df-ae3e-4e5b2e25f280"
+  clientID: "acf22266-57d3-4345-b509-1efeb7755c4e"
+  clientSecret:
+    name: azure-credentials
+    namespace: mp-bench-azure

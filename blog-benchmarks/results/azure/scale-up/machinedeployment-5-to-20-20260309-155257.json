@@ -1,0 +1,24 @@
+{
+  "benchmark": "scale-up",
+  "provider": "azure",
+  "type": "machinedeployment",
+  "scale": {
+    "start": 5,
+    "end": 20
+  },
+  "timestamps": {
+    "start": "2026-03-09T10:20:31Z",
+    "end": "2026-03-09T10:22:57Z"
+  },
+  "results": {
+    "first_node_ready_seconds": 138.806122000,
+    "all_nodes_ready_seconds": 145.508970000,
+    "total_duration_seconds": 145.549730000,
+    "percentiles": {
+      "p50_seconds": 138.806122000,
+      "p90_seconds": 145.508970000,
+      "p99_seconds": 145.508970000
+    }
+  },
+  "raw_node_ready_times": [138.806122000,138.806122000,138.806122000,138.806122000,138.806122000,138.806122000,138.806122000,138.806122000,145.508970000,145.508970000,145.508970000,145.508970000,145.508970000,145.508970000,145.508970000]
+}
